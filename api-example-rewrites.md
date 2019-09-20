@@ -1,23 +1,4 @@
-# RestfulHttpsProxy
-Proxy server that can have its rewrite rules configured through a REST API
 
-# Getting started
-A version of golang is needed that supports go modules by default.
-
-Run `make` in project root. Project root must not be in the go src directory, otherwise go modules has to be enabled through environment variables.
-If using for the first time the cert must be trusted. Enable the system
-to use this proxy in the settings and go to `http://a.proxi/ca.pem` on the
-mobile device to install the cert.
-
-For long term use, use `make longTermDeploy`
-
-To build a docker image use `make docker-image`
-
-To run the docker image use `make docker-run`
-
-There are some limitations when using docker, for example, the machine cannot proxy itsself.
-
-# API
 ### To clear rewrite rules (example)
 Request Method (Doesn't matter for now)
 ```
@@ -110,9 +91,9 @@ Request Body (JSON)
    - **ip** Optional field, specifies the ip that the rules apply to.
    - **rules** Array of proxy rules, can be empty to clear rules
       - **url** Regex that will trigger the application of this rule if it is satisfied when compared to the url
-	   - **uploadSpeed** Throttles the upload speed to this value if url pattern is satisfied (Rate is in bits/second)
-	   - **downloadSpeed** Throttles the download speed to this value if url pattern is satisfied (Rate is in bits/second)
-	   - **responseDelay** Kind of like ping, but what it actually does is it simulates a slow server that thinks for this amount of time before responding.
+	 - **uploadSpeed** Throttles the upload speed to this value if url pattern is satisfied (Rate is in bits/second)
+	 - **downloadSpeed** Throttles the download speed to this value if url pattern is satisfied (Rate is in bits/second)
+	 - **responseDelay** Kind of like ping, but what it actually does is it simulates a slow server that thinks for this amount of time before responding.
 	 - **rewrite**  All of the rewrite rules that modify traffic go here.
 		 - **request**
 			 - **url** Array of url rule objects
@@ -136,7 +117,3 @@ Request Body (JSON)
 - *The regular expressions must be double escaped. so the regex `\.` will be `\\.` to look for a dot.*
 - *The regular expressions are in golang regex format.*
 - *if you want to use (**find**  + **replace**)  (**delete**)  (**append**)  (**prepend**) together, then you must separate them into separate rules*
-
-See the api-example...md files for more info.
-
-### Logging is not yet supported
