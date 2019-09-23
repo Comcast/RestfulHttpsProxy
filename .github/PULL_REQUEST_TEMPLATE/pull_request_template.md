@@ -1,11 +1,11 @@
-# Addresses 
+## Addresses 
 [Issue(s)]
 
-# Description
+## Description
 [Description of PR]
 
-# Additional context
+## Additional context
 
-# Checklist
+## Checklist
 - [ ] Your code builds clean without any errors or warnings.
 - [ ] Device connected through proxy has internet.
