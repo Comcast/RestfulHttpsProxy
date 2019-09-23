@@ -1,6 +1,15 @@
 # RestfulHttpsProxy
 Proxy server that can have its rewrite rules configured through a REST API
 
+# License
+This project is licensed under
+[LICENSE](LICENSE)
+
+# Contributing
+Please read [CONTRIBUTING](CONTRIBUTING.md).
+
+Please read the [CODE_OF_CONDUCT](CODE_OF_CONDUCT.md). We take it very seriously!
+
 # Getting started
 A version of golang is needed that supports go modules by default.
 
