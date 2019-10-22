@@ -34,6 +34,8 @@ import (
 	// but it need to build with c-go
 	"bytes"
 	"github.com/dsnet/compress/brotli"
+	//
+	// "log"
 )
 
 // This order is really important, will fail to handshake if it isn't in this order for some sites.
@@ -112,30 +114,36 @@ func createConn(dst *url.URL) (net.Conn, error) {
 	return server, err
 }
 
+type connAndBuffer struct {
+	conn net.Conn
+	buff *bufio.Reader
+}
+
 type ServerConnProps struct {
 	lastUsedTime time.Time
 
-	//These should be combined into one string, so we can use it in a dictionary
-	Host   string
-	Scheme string
-
 	Conn                  net.Conn
+	bufferReader          *bufio.Reader
+	Conns                 map[string]connAndBuffer // map["scheme://host"]connAndBuffer
 	ResponseHeaderTimeout time.Duration
 	maxHeaderBytes        int64 // Not implemented yet
 
 	listenLoopMu sync.Mutex
 	writeLoopMu  sync.Mutex
-	connMu       sync.Mutex
+	connsMu      sync.Mutex
 }
 
 func (scp *ServerConnProps) Close() error {
-	scp.connMu.Lock()
-	defer scp.connMu.Unlock()
-	if scp.Conn != nil {
-		err := scp.Conn.Close()
-		return err
+	scp.connsMu.Lock()
+	defer scp.connsMu.Unlock()
+	var err error
+	for _, conn := range scp.Conns {
+		newErr := conn.conn.Close()
+		if err == nil {
+			err = newErr
+		}
 	}
-	return nil
+	return err
 }
 
 func (scp *ServerConnProps) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -149,6 +157,7 @@ func (scp *ServerConnProps) RoundTrip(request *http.Request) (*http.Response, er
 
 	resp, err := scp.tryRoundTrip(request)
 	// if err != nil {
+	// 	log.Print("[RETRY]")
 	// 	resp, err = scp.tryRoundTrip(request)
 	// }
 	return resp, err
@@ -206,28 +215,41 @@ func (scp *ServerConnProps) tryRoundTrip(request *http.Request) (*http.Response,
 }
 
 func (scp *ServerConnProps) Open(request *http.Request) error {
-	scp.connMu.Lock()
-	defer scp.connMu.Unlock()
+	_, err := scp.openConn(request)
+	return err
+}
+
+func (scp *ServerConnProps) openConn(request *http.Request) (*connAndBuffer, error) {
+	scp.connsMu.Lock()
+	defer scp.connsMu.Unlock()
+
+	if scp.Conns == nil {
+		scp.Conns = make(map[string]connAndBuffer)
+	}
 
 	dst := *request.URL
 	insertPort(&dst)
+	host := dst.Scheme + "://" + dst.Host
 
-	if scp.Conn != nil && scp.Host != dst.Host && scp.Scheme != dst.Scheme {
-		scp.Conn.Close()
+	if server, ok := scp.Conns[host]; ok {
+		scp.Conns[host] = server
+		scp.Conn = server.conn
+		scp.bufferReader = server.buff
+		return &server, nil
+	}
+	server, err := createConn(&dst)
+	if server == nil {
 		scp.Conn = nil
-		scp.Host = ""
-		scp.Scheme = ""
+		scp.bufferReader = nil
+		return nil, err
 	}
-	if scp.Conn == nil {
-		server, err := createConn(&dst)
-		if server == nil {
-			return err
-		}
-		scp.Conn = server
-		scp.Host = dst.Host
-		scp.Scheme = dst.Scheme
-	}
-	return nil
+	scp.Conn = server
+	scp.bufferReader = bufio.NewReader(
+		scp.Conn,
+	)
+	ret := connAndBuffer{conn: scp.Conn, buff: scp.bufferReader}
+	scp.Conns[host] = ret
+	return &ret, nil
 }
 
 func (scp *ServerConnProps) Write(request *http.Request) error {
@@ -266,11 +288,7 @@ func (scp *ServerConnProps) Listen(request *http.Request) (*http.Response, error
 	scp.listenLoopMu.Lock()
 	defer scp.listenLoopMu.Unlock()
 
-	serverBuffer := bufio.NewReader(
-		scp.Conn,
-	)
-
-	resp, err := http.ReadResponse(serverBuffer, request)
+	resp, err := http.ReadResponse(scp.bufferReader, request)
 	if resp == nil {
 		return resp, err
 	}
