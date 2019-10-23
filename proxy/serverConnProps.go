@@ -35,7 +35,7 @@ import (
 	"bytes"
 	"github.com/dsnet/compress/brotli"
 	//
-	// "log"
+	"log"
 )
 
 // This order is really important, will fail to handshake if it isn't in this order for some sites.
@@ -77,7 +77,7 @@ func createConn(dst *url.URL) (net.Conn, error) {
 	dstWithPort := *dst
 	insertPort(&dstWithPort)
 	dialer := &net.Dialer{
-		Timeout: 1 * time.Second,
+		Timeout: 5 * time.Second,
 	}
 	if dst.Scheme != "https" {
 		server, err := dialer.Dial(
@@ -114,17 +114,11 @@ func createConn(dst *url.URL) (net.Conn, error) {
 	return server, err
 }
 
-type connAndBuffer struct {
-	conn net.Conn
-	buff *bufio.Reader
-}
-
 type ServerConnProps struct {
 	lastUsedTime time.Time
 
 	Conn                  net.Conn
-	bufferReader          *bufio.Reader
-	Conns                 map[string]connAndBuffer // map["scheme://host"]connAndBuffer
+	Conns                 map[string]net.Conn // map["scheme://host"]net.Conn
 	ResponseHeaderTimeout time.Duration
 	maxHeaderBytes        int64 // Not implemented yet
 
@@ -138,17 +132,19 @@ func (scp *ServerConnProps) Close() error {
 	defer scp.connsMu.Unlock()
 	var err error
 	for _, conn := range scp.Conns {
-		newErr := conn.conn.Close()
+		newErr := conn.Close()
 		if err == nil {
 			err = newErr
 		}
 	}
+	scp.Conns = make(map[string]net.Conn)
+	scp.Conn = nil
 	return err
 }
 
 func (scp *ServerConnProps) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request == nil {
-		return nil, errors.New("Request is nil.")
+		return nil, errors.New("request is nil")
 	}
 	request.Header.Set("Accept-Encoding", "identity, gzip, deflate, br")
 	request.Header.Del("Connection")
@@ -156,10 +152,6 @@ func (scp *ServerConnProps) RoundTrip(request *http.Request) (*http.Response, er
 	request.Header.Del("Transfer-Encoding")
 
 	resp, err := scp.tryRoundTrip(request)
-	// if err != nil {
-	// 	log.Print("[RETRY]")
-	// 	resp, err = scp.tryRoundTrip(request)
-	// }
 	return resp, err
 }
 
@@ -215,16 +207,11 @@ func (scp *ServerConnProps) tryRoundTrip(request *http.Request) (*http.Response,
 }
 
 func (scp *ServerConnProps) Open(request *http.Request) error {
-	_, err := scp.openConn(request)
-	return err
-}
-
-func (scp *ServerConnProps) openConn(request *http.Request) (*connAndBuffer, error) {
 	scp.connsMu.Lock()
 	defer scp.connsMu.Unlock()
 
 	if scp.Conns == nil {
-		scp.Conns = make(map[string]connAndBuffer)
+		scp.Conns = make(map[string]net.Conn)
 	}
 
 	dst := *request.URL
@@ -233,23 +220,25 @@ func (scp *ServerConnProps) openConn(request *http.Request) (*connAndBuffer, err
 
 	if server, ok := scp.Conns[host]; ok {
 		scp.Conns[host] = server
-		scp.Conn = server.conn
-		scp.bufferReader = server.buff
-		return &server, nil
+		scp.Conn = server
+		one := []byte{0}
+		scp.Conn.SetReadDeadline(time.Now().Add(1000 * time.Microsecond))
+		if _, err := scp.Conn.Read(one); err != io.EOF {
+			scp.Conn.SetReadDeadline(time.Time{})
+			return nil
+		}
+		log.Print("[conn closed detected]")
+		scp.Conn.Close()
+		scp.Conn = nil
 	}
 	server, err := createConn(&dst)
-	if server == nil {
+	if err != nil {
 		scp.Conn = nil
-		scp.bufferReader = nil
-		return nil, err
+		return err
 	}
 	scp.Conn = server
-	scp.bufferReader = bufio.NewReader(
-		scp.Conn,
-	)
-	ret := connAndBuffer{conn: scp.Conn, buff: scp.bufferReader}
-	scp.Conns[host] = ret
-	return &ret, nil
+	scp.Conns[host] = server
+	return nil
 }
 
 func (scp *ServerConnProps) Write(request *http.Request) error {
@@ -288,7 +277,11 @@ func (scp *ServerConnProps) Listen(request *http.Request) (*http.Response, error
 	scp.listenLoopMu.Lock()
 	defer scp.listenLoopMu.Unlock()
 
-	resp, err := http.ReadResponse(scp.bufferReader, request)
+	resp, err := http.ReadResponse(
+		bufio.NewReader(scp.Conn),
+		request,
+	)
+
 	if resp == nil {
 		return resp, err
 	}
