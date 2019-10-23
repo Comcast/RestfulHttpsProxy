@@ -130,6 +130,7 @@ var InBlock int64 = 0
 func (p *proxy) listenConn(client *ClientConnProps) {
 	server := &ServerConnProps{
 		ResponseHeaderTimeout: p.ResponseHeaderTimeout,
+		MaxConns:              5,
 	}
 
 	atomic.AddInt64(&clientConns, 1)
