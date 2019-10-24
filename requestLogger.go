@@ -25,6 +25,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"restfulHttpsProxy/util"
 	"strings"
 	"sync"
 )
@@ -32,62 +33,17 @@ import (
 func copyResponse(resp *http.Response) *http.Response {
 	var respCopy http.Response
 	respCopy = *resp
-	resp.Body, respCopy.Body = CloneReadCloser(resp.Body)
+	split := util.BufferedSplit(resp.Body, 2)
+	resp.Body, respCopy.Body = split[0], split[1]
 	return &respCopy
 }
 
 func copyRequest(req *http.Request) *http.Request {
 	var reqCopy http.Request
 	reqCopy = *req
-	req.Body, reqCopy.Body = CloneReadCloser(req.Body)
+	split := util.BufferedSplit(req.Body, 2)
+	req.Body, reqCopy.Body = split[0], split[1]
 	return &reqCopy
-}
-
-type CustomReadCloser struct {
-	Reader io.Reader
-	Closer io.Closer
-}
-
-func CloneReadCloser(rc io.ReadCloser) (io.ReadCloser, io.ReadCloser) {
-	pr, pw := io.Pipe()
-	tee := io.TeeReader(rc, pw)
-
-	var teeRc CustomReadCloser
-	var dupRc CustomReadCloser
-	teeRc.Reader = tee
-	teeRc.Closer = rc
-	dupRc.Reader = pr
-	dupRc.Closer = nil
-	return &teeRc, &dupRc
-}
-
-// func CloneReadCloser(rc io.ReadCloser) (io.ReadCloser, io.ReadCloser) {
-// 	var buf bytes.Buffer
-// 	tee := io.TeeReader(rc, &buf)
-//
-// 	var teeRc CustomReadCloser
-// 	var bufRc CustomReadCloser
-// 	teeRc.Reader = tee
-// 	teeRc.Closer = rc
-// 	bufRc.Reader = &buf
-// 	bufRc.Closer = nil
-// 	return &teeRc, &bufRc
-// }
-
-// func CloneReadCloser(rc io.ReadCloser) (io.ReadCloser, io.ReadCloser) {
-// 	return rc, nil
-// }
-
-func (r *CustomReadCloser) Read(p []byte) (n int, err error) {
-	return r.Reader.Read(p)
-}
-
-func (r *CustomReadCloser) Close() (err error) {
-	if r.Closer == nil {
-		return nil
-	}
-	err = r.Closer.Close()
-	return
 }
 
 type loggingProperties struct {
@@ -191,7 +147,64 @@ func clearLogs(ip string) {
 	logProps[ip].Mutex.Unlock()
 }
 
-func logRequest(ip string, req *http.Request, resp *http.Response) {
+func logRequest(ip string, req *http.Request) func(resp *http.Response) {
+	var log roundTripLog
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	if logProps[ip] == nil {
+		logProps[ip] = &loggingProperties{}
+	}
+	logProps[ip].Mutex.Lock()
+	defer logProps[ip].Mutex.Unlock()
+	if logProps[ip].recording == false {
+		return func(resp *http.Response) {}
+	}
+	reqCopy := copyRequest(req)
+	go func() {
+		log.Req.URL = reqCopy.URL.String()
+		log.Req.Headers = headerToString(reqCopy.Header)
+		reqBody, _ := ioutil.ReadAll(reqCopy.Body)
+		reqCopy.Body.Close()
+		log.Req.Body = string(reqBody)
+		wg.Done()
+	}()
+
+	return func(resp *http.Response) {
+		respCopy := copyResponse(resp)
+		go func() {
+			wg.Wait()
+			file := getRequestLogFile("logs/" + ip + ".log")
+			defer file.Close()
+			token := make([]byte, 1)
+			if n, err := file.Read(token); err != nil || n != 1 || token[0] != '[' {
+				file.Write([]byte("[]"))
+				file.Seek(1, 0) // [|]
+			}
+			file.Seek(-2, 2) // ...}|]
+			if n, err := file.Read(token); err == nil && n == 1 && token[0] == '}' {
+				file.Write([]byte(","))
+			}
+			log.Resp.Status = respCopy.Status
+			log.Resp.Headers = headerToString(respCopy.Header)
+			respBody, _ := ioutil.ReadAll(respCopy.Body)
+			respCopy.Body.Close()
+			log.Resp.Body = string(respBody)
+			bytes, err := json.Marshal(log)
+			if err != nil {
+				return
+			}
+			bytes, err = formatJSON(bytes)
+			if err != nil {
+				return
+			}
+			file.Write(bytes)
+
+			file.Write([]byte("]"))
+		}()
+	}
+}
+
+func logResponse(ip string, req *http.Request, resp *http.Response) {
 	go func() {
 		if logProps[ip] == nil {
 			logProps[ip] = &loggingProperties{}
@@ -215,12 +228,12 @@ func logRequest(ip string, req *http.Request, resp *http.Response) {
 		var log roundTripLog
 		log.Req.URL = req.URL.String()
 		log.Req.Headers = headerToString(req.Header)
-		//reqBody, _ := ioutil.ReadAll(req.Body)
-		log.Req.Body = "not supported yet" //string(reqBody)
+		reqBody, _ := ioutil.ReadAll(req.Body)
+		log.Req.Body = string(reqBody)
 		log.Resp.Status = resp.Status
 		log.Resp.Headers = headerToString(resp.Header)
-		//respBody, _ := ioutil.ReadAll(resp.Body)
-		log.Resp.Body = "not supported yet" //string(respBody)
+		respBody, _ := ioutil.ReadAll(resp.Body)
+		log.Resp.Body = string(respBody)
 		bytes, err := json.Marshal(log)
 		if err != nil {
 			return

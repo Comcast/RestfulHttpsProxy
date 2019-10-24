@@ -28,6 +28,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"restfulHttpsProxy/util"
 	"sync"
 	"time"
 	// 3rd party, probably slower, could use google's alternative
@@ -164,9 +165,9 @@ func (scp *ServerConnProps) RoundTrip(request *http.Request) (*http.Response, er
 		if err == io.EOF {
 			request.ContentLength = int64(n)
 		}
-		request.Body = ReadCloserPair{
-			r: io.MultiReader(bytes.NewBuffer(bodyBytes[:n]), request.Body),
-			c: request.Body,
+		request.Body = util.ReadCloserPair{
+			Reader: io.MultiReader(bytes.NewBuffer(bodyBytes[:n]), request.Body),
+			Closer: request.Body,
 		}
 	}
 
@@ -189,7 +190,7 @@ func (scp *ServerConnProps) RoundTrip(request *http.Request) (*http.Response, er
 			resp, errS, errR = scp.tryRoundTrip(request)
 		}
 	} else {
-		body := ReadCloserStats(request.Body)
+		body := util.ReadCloserStats(request.Body)
 		request.Body = body
 
 		resp, errS, errR = scp.tryRoundTrip(request)

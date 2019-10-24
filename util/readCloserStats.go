@@ -14,21 +14,29 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package proxy
+package util
 
 import (
 	"io"
 )
 
-type ReadCloserPair struct {
-	c io.Closer
-	r io.Reader
+func ReadCloserStats(rc io.ReadCloser) *readCloserStats {
+	return &readCloserStats{ReadCloser: rc}
 }
 
-func (rcp ReadCloserPair) Close() error {
-	return rcp.c.Close()
+type readCloserStats struct {
+	ReadCloser io.ReadCloser
+	Closed     bool
+	Used       bool
 }
 
-func (rcp ReadCloserPair) Read(p []byte) (n int, err error) {
-	return rcp.r.Read(p)
+func (rcs *readCloserStats) Close() error {
+	rcs.Closed = true
+	rcs.Used = true
+	return rcs.ReadCloser.Close()
+}
+
+func (rcs *readCloserStats) Read(p []byte) (n int, err error) {
+	rcs.Used = true
+	return rcs.ReadCloser.Read(p)
 }

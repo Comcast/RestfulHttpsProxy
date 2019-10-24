@@ -23,6 +23,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"restfulHttpsProxy/util"
 	"sync"
 	"time"
 )
@@ -102,9 +103,9 @@ func (client *ClientConnProps) Write(resp *http.Response) error {
 		if err == io.EOF {
 			resp.ContentLength = int64(n)
 		}
-		resp.Body = ReadCloserPair{
-			r: io.MultiReader(bytes.NewBuffer(bodyBytes[:n]), resp.Body),
-			c: resp.Body,
+		resp.Body = util.ReadCloserPair{
+			Reader: io.MultiReader(bytes.NewBuffer(bodyBytes[:n]), resp.Body),
+			Closer: resp.Body,
 		}
 	}
 
