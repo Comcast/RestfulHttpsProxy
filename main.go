@@ -33,6 +33,13 @@ import (
 	"time"
 )
 
+import (
+	"net/http/pprof"
+	// "os"
+	// "runtime"
+	// "runtime/pprof"
+)
+
 const regexBufferSize = 4096 * 4
 
 func setBodyString(resp *http.Response, s string) {
@@ -88,24 +95,24 @@ func handleProxyAPI(req *http.Request) *http.Response {
 		buf := bytes.NewBufferString("clearing rules")
 		resp.ContentLength = int64(buf.Len())
 		resp.Body = ioutil.NopCloser(buf)
-		// } else if req.URL.Path == "/api/logging/start" {
-		// 	buf := bytes.NewBufferString("Starting to log")
-		// 	resp.ContentLength = int64(buf.Len())
-		// 	resp.Body = ioutil.NopCloser(buf)
-		// 	startLogging(clientIP)
-		// } else if req.URL.Path == "/api/logging/stop" {
-		// 	buf := bytes.NewBufferString("Stopping logging")
-		// 	resp.ContentLength = int64(buf.Len())
-		// 	resp.Body = ioutil.NopCloser(buf)
-		// 	stopLogging(clientIP)
-		// } else if req.URL.Path == "/api/logging/get" {
-		// 	resp.ContentLength = -1
-		// 	resp.Body = getLogs(clientIP)
-		// } else if req.URL.Path == "/api/logging/clear" {
-		// 	buf := bytes.NewBufferString("Clearing Clogs")
-		// 	resp.ContentLength = int64(buf.Len())
-		// 	resp.Body = ioutil.NopCloser(buf)
-		// 	clearLogs(clientIP)
+	} else if req.URL.Path == "/api/logging/start" {
+		buf := bytes.NewBufferString("Starting to log")
+		resp.ContentLength = int64(buf.Len())
+		resp.Body = ioutil.NopCloser(buf)
+		l.startLogging(clientIP)
+	} else if req.URL.Path == "/api/logging/stop" {
+		buf := bytes.NewBufferString("Stopping logging")
+		resp.ContentLength = int64(buf.Len())
+		resp.Body = ioutil.NopCloser(buf)
+		l.stopLogging(clientIP)
+	} else if req.URL.Path == "/api/logging/get" {
+		resp.ContentLength = -1
+		resp.Body = l.getLogs(clientIP)
+	} else if req.URL.Path == "/api/logging/clear" {
+		buf := bytes.NewBufferString("Clearing Clogs")
+		resp.ContentLength = int64(buf.Len())
+		resp.Body = ioutil.NopCloser(buf)
+		l.clearLogs(clientIP)
 	} else if req.URL.Path == "/ca.pem" {
 		buf := bytes.NewReader(caBytes)
 		resp.ContentLength = int64(buf.Len())
@@ -143,12 +150,38 @@ func launchSessionCleaner(period time.Duration, expiration time.Duration) {
 }
 
 var caBytes []byte
+var l Logger = Logger{}
 
 func main() {
 	var err error
 
 	var caPath string
 	var keyPath string
+
+	go func() {
+		r := http.NewServeMux()
+
+		// Register pprof handlers
+		r.HandleFunc("/debug/pprof/", pprof.Index)
+		r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		r.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		r.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		r.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+		http.ListenAndServe(":8080", r)
+		// time.Sleep(20 * time.Second)
+		// f, err := os.Create("mem.prof")
+		// if err != nil {
+		// 	log.Fatal("could not create memory profile: ", err)
+		// }
+		// defer f.Close()
+		// runtime.GC() // get up-to-date statistics
+		// if err := pprof.WriteHeapProfile(f); err != nil {
+		// 	log.Fatal("could not write memory profile: ", err)
+		// }
+		// time.Sleep(1 * time.Second)
+		// os.Exit(0)
+	}()
 
 	flag.StringVar(&caPath, "pem", "ca.pem", "path to pem file")
 	flag.StringVar(&keyPath, "key", "key.pem", "path to key file")
@@ -204,7 +237,7 @@ func main() {
 				return req, resp
 			}
 
-			//requestCopy := copyRequest(req)
+			continueLogResponse := l.logRequest(ip, req)
 
 			val, _ := rewriteRules.Load(ip)
 			rewriteRulesForClient, _ := val.(prxConfig.RewriteRules)
@@ -311,9 +344,7 @@ func main() {
 				time.Sleep(time.Duration(responseDelay) * time.Microsecond)
 			}
 
-			//responseCopy := copyResponse(resp)
-			//logRequest(ip, requestCopy, responseCopy)
-			//logRequest(ip, req, resp)
+			continueLogResponse(resp)
 			return req, resp
 		},
 	)

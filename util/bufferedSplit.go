@@ -17,7 +17,6 @@ limitations under the License.
 package util
 
 import (
-	"bytes"
 	"io"
 	"sync"
 )
@@ -57,7 +56,7 @@ func (b *bufferLoader) read(i int) {
 /*-------------------------------------------------*/
 
 type buffer struct {
-	Buffer bytes.Buffer
+	Buffer DynamicCircularBuffer
 	Source *bufferLoader
 }
 
@@ -83,7 +82,7 @@ func (b *buffer) Write(p []byte) (n int, err error) {
 func (b *buffer) Close() error {
 	b.Source.m.Lock()
 	defer b.Source.m.Unlock()
-	b.Buffer = bytes.Buffer{}
+	b.Buffer = DynamicCircularBuffer{}
 	return b.Source.close()
 }
 
@@ -101,7 +100,7 @@ func BufferedSplit(rc io.ReadCloser, n int) []io.ReadCloser {
 	result := make([]io.ReadCloser, n)
 	for i := 0; i < n; i++ {
 		b := buffer{
-			Buffer: bytes.Buffer{},
+			Buffer: DynamicCircularBuffer{},
 			Source: &s,
 		}
 		result[i] = &b
