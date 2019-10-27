@@ -21,7 +21,7 @@ EXPOSED_API_PORT=9998
 PROXY_PORT=9999
 
 run: build
-				./$(TARGET)
+				./$(TARGET) $(EXPOSED_API_PORT) $(PROXY_PORT)
 build:
 				$(GOCMD) build -o $(TARGET) -v
 test:
@@ -35,7 +35,12 @@ longTermDeploy: build
 
 #Docker targets
 docker-image:
-				docker build -t $(DOCKER_LOCAL_IMAGE) .
+				docker build -t $(DOCKER_LOCAL_IMAGE) \
+				--build-arg EXPOSED_API_PORT=$(EXPOSED_API_PORT) \
+				--build-arg PROXY_PORT=$(PROXY_PORT) .
 
 docker-run:
-				docker run -t -p 9999:9999 -p 9998:9998 -i $(DOCKER_LOCAL_IMAGE)
+				docker run -t \
+				-p $(PROXY_PORT):$(PROXY_PORT) \
+				-p $(EXPOSED_API_PORT):$(EXPOSED_API_PORT) \
+				-i $(DOCKER_LOCAL_IMAGE)

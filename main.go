@@ -25,6 +25,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"restfulHttpsProxy/proxy"
 	"restfulHttpsProxy/prxConfig"
 	"restfulHttpsProxy/rewriteLogic"
@@ -318,8 +319,8 @@ func main() {
 		},
 	)
 	go launchSessionCleaner(time.Minute, time.Hour*48)
-	go launchExposedAPI(":9998")
-	prx.Listen(":9999")
+	go launchExposedAPI(":" + os.Args[1])
+	prx.Listen(":" + os.Args[2])
 }
 
 func launchExposedAPI(host string) error {
