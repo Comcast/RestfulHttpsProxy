@@ -75,7 +75,7 @@ func createConn(dst *url.URL) (net.Conn, error) {
 	dstWithPort := *dst
 	insertPort(&dstWithPort)
 	dialer := &net.Dialer{
-		Timeout: 1 * time.Second,
+		Timeout: 5 * time.Second,
 	}
 	if dst.Scheme != "https" {
 		server, err := dialer.Dial(
@@ -115,124 +115,44 @@ func createConn(dst *url.URL) (net.Conn, error) {
 type ServerConnProps struct {
 	lastUsedTime time.Time
 
-	//These should be combined into one string, so we can use it in a dictionary
-	Host   string
-	Scheme string
-
+	MaxConns              int
 	Conn                  net.Conn
+	Conns                 map[string]net.Conn // map["scheme://host"]net.Conn
 	ResponseHeaderTimeout time.Duration
 	maxHeaderBytes        int64 // Not implemented yet
 
 	listenLoopMu sync.Mutex
 	writeLoopMu  sync.Mutex
-	connMu       sync.Mutex
+	connsMu      sync.Mutex
 }
 
 func (scp *ServerConnProps) Close() error {
-	scp.connMu.Lock()
-	defer scp.connMu.Unlock()
-	if scp.Conn != nil {
-		err := scp.Conn.Close()
-		return err
+	scp.connsMu.Lock()
+	defer scp.connsMu.Unlock()
+	return scp.close()
+}
+
+func (scp *ServerConnProps) close() error {
+	var err error
+	for _, conn := range scp.Conns {
+		newErr := conn.Close()
+		if err == nil {
+			err = newErr
+		}
 	}
-	return nil
+	scp.Conns = make(map[string]net.Conn)
+	scp.Conn = nil
+	return err
 }
 
 func (scp *ServerConnProps) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request == nil {
-		return nil, errors.New("Request is nil.")
+		return nil, errors.New("request is nil")
 	}
 	request.Header.Set("Accept-Encoding", "identity, gzip, deflate, br")
 	request.Header.Del("Connection")
 	request.Header.Del("Content-Length")
 	request.Header.Del("Transfer-Encoding")
-
-	resp, err := scp.tryRoundTrip(request)
-	// if err != nil {
-	// 	resp, err = scp.tryRoundTrip(request)
-	// }
-	return resp, err
-}
-
-func cancelHandle(f func()) (cancel func(), action func()) {
-	var once sync.Once
-	cancel = func() {
-		once.Do(func() {})
-	}
-	action = func() {
-		once.Do(f)
-	}
-	return action, cancel
-}
-
-func (scp *ServerConnProps) tryRoundTrip(request *http.Request) (*http.Response, error) {
-	err := scp.Open(request)
-	if err != nil {
-		return nil, err
-	}
-
-	if scp.Conn != nil && request.Header.Get("Remote-Address") != "" {
-		request.Header.Set("Remote-Address", scp.Conn.RemoteAddr().String())
-	}
-
-	wg := sync.WaitGroup{}
-	wg.Add(2)
-
-	timeoutFunc, cancelTimeoutFunc := cancelHandle(func() { scp.Close() })
-	var resp *http.Response
-	go func() {
-		err := scp.Write(request)
-		if err != nil {
-			scp.Close()
-		} else {
-			go func() {
-				time.Sleep(scp.ResponseHeaderTimeout)
-				timeoutFunc()
-			}()
-		}
-		wg.Done()
-	}()
-	go func() {
-		resp, err = scp.Listen(request)
-		cancelTimeoutFunc()
-		if err != nil {
-			scp.Close()
-		}
-		wg.Done()
-	}()
-	wg.Wait()
-
-	return resp, err
-}
-
-func (scp *ServerConnProps) Open(request *http.Request) error {
-	scp.connMu.Lock()
-	defer scp.connMu.Unlock()
-
-	dst := *request.URL
-	insertPort(&dst)
-
-	if scp.Conn != nil && scp.Host != dst.Host && scp.Scheme != dst.Scheme {
-		scp.Conn.Close()
-		scp.Conn = nil
-		scp.Host = ""
-		scp.Scheme = ""
-	}
-	if scp.Conn == nil {
-		server, err := createConn(&dst)
-		if server == nil {
-			return err
-		}
-		scp.Conn = server
-		scp.Host = dst.Host
-		scp.Scheme = dst.Scheme
-	}
-	return nil
-}
-
-func (scp *ServerConnProps) Write(request *http.Request) error {
-	scp.writeLoopMu.Lock()
-	defer scp.writeLoopMu.Unlock()
 
 	if request.ContentLength == 0 {
 		request.Body = nil
@@ -259,6 +179,119 @@ func (scp *ServerConnProps) Write(request *http.Request) error {
 		}
 	}
 
+	var resp *http.Response
+	var errS error
+	var errR error
+
+	if request.Body == nil {
+		resp, errS, errR = scp.tryRoundTrip(request)
+		if errS != nil {
+			resp, errS, errR = scp.tryRoundTrip(request)
+		}
+	} else {
+		body := ReadCloserStats(request.Body)
+		request.Body = body
+
+		resp, errS, errR = scp.tryRoundTrip(request)
+		if errS != nil && !body.Used {
+			resp, errS, errR = scp.tryRoundTrip(request)
+		}
+	}
+	if errS != nil {
+		return resp, errS
+	}
+	return resp, errR
+}
+
+func cancelHandle(f func()) (cancel func(), action func()) {
+	var once sync.Once
+	cancel = func() {
+		once.Do(func() {})
+	}
+	action = func() {
+		once.Do(f)
+	}
+	return action, cancel
+}
+
+// returns (*http.Response, error sending request, error getting response)
+func (scp *ServerConnProps) tryRoundTrip(request *http.Request) (*http.Response, error, error) {
+	var errS error
+	var errR error
+
+	errS = scp.Open(request)
+	if errS != nil {
+		return nil, errS, errR
+	}
+
+	if scp.Conn != nil && request.Header.Get("Remote-Address") != "" {
+		request.Header.Set("Remote-Address", scp.Conn.RemoteAddr().String())
+	}
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	timeoutFunc, cancelTimeoutFunc := cancelHandle(func() { scp.Close() })
+	var resp *http.Response
+	go func() {
+		errS := scp.Write(request)
+		if errS != nil {
+			scp.Close()
+		} else {
+			go func() {
+				time.Sleep(scp.ResponseHeaderTimeout)
+				timeoutFunc()
+			}()
+		}
+		wg.Done()
+	}()
+	go func() {
+		resp, errR = scp.Listen(request)
+		cancelTimeoutFunc()
+		if errR != nil {
+			scp.Close()
+		}
+		wg.Done()
+	}()
+	wg.Wait()
+
+	return resp, errS, errR
+}
+
+func (scp *ServerConnProps) Open(request *http.Request) error {
+	scp.connsMu.Lock()
+	defer scp.connsMu.Unlock()
+
+	if scp.Conns == nil {
+		scp.Conns = make(map[string]net.Conn)
+	}
+
+	dst := *request.URL
+	insertPort(&dst)
+	host := dst.Scheme + "://" + dst.Host
+
+	if server, ok := scp.Conns[host]; ok {
+		scp.Conns[host] = server
+		scp.Conn = server
+		return nil
+	}
+	if len(scp.Conns) > scp.MaxConns {
+		scp.close()
+	}
+	server, err := createConn(&dst)
+	if err != nil {
+		scp.Conn = nil
+		return err
+	}
+	scp.Conn = server
+	scp.Conns[host] = server
+	return nil
+}
+
+func (scp *ServerConnProps) Write(request *http.Request) error {
+	scp.writeLoopMu.Lock()
+	defer scp.writeLoopMu.Unlock()
+
 	return request.Write(scp.Conn)
 }
 
@@ -266,11 +299,11 @@ func (scp *ServerConnProps) Listen(request *http.Request) (*http.Response, error
 	scp.listenLoopMu.Lock()
 	defer scp.listenLoopMu.Unlock()
 
-	serverBuffer := bufio.NewReader(
-		scp.Conn,
+	resp, err := http.ReadResponse(
+		bufio.NewReader(scp.Conn),
+		request,
 	)
 
-	resp, err := http.ReadResponse(serverBuffer, request)
 	if resp == nil {
 		return resp, err
 	}
